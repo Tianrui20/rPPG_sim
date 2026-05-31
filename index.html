@@ -90,6 +90,17 @@
 
   .grid { display: grid; grid-template-columns: minmax(0,1.35fr) minmax(0,1fr); gap: 20px; align-items: start; margin-top: 18px; }
   @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+  .agebox { display: none; margin: 16px 0 2px; padding: 16px 20px; border: 1.5px dashed var(--line2);
+    border-radius: 16px; background: linear-gradient(180deg, rgba(155,89,182,.10), var(--bg2));
+    align-items: center; gap: 22px; }
+  .agebox.show { display: flex; flex-wrap: wrap; }
+  .agebox-main { flex: none; }
+  .agebox-k { font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); display: flex; align-items: center; gap: 9px; }
+  .agebox-k .exp { font-size: 9px; letter-spacing: .08em; color: #c79be0; border: 1px solid rgba(155,89,182,.4); border-radius: 999px; padding: 2px 7px; }
+  .agebox-v { font-family: "Spline Sans Mono", monospace; font-size: 40px; font-weight: 700; color: #c79be0; line-height: 1; margin-top: 7px; letter-spacing: -.02em; }
+  .agebox-v .u { font-size: 14px; font-weight: 500; color: var(--muted); margin-left: 4px; }
+  .agebox-note { flex: 1; min-width: 240px; font-size: 12px; line-height: 1.55; color: var(--muted); }
+  .agebox-note b { color: var(--ink); }
   .panel { background: linear-gradient(180deg, var(--panel), var(--bg2)); border: 1px solid var(--line); border-radius: 18px; box-shadow: var(--glow); overflow: hidden; }
   .panel-title { font-size: 11px; letter-spacing: .16em; text-transform: uppercase; color: var(--muted); padding: 14px 18px 0; }
 
@@ -114,6 +125,11 @@
   .stillness.move { border-color: var(--hr); color: #ffd9df; }
   .stillness.move .ring { background: var(--hr); animation: ping 1s ease-out infinite; }
   .stillness.move .meter > span { background: var(--hr); }
+  .recbadge { position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
+    display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 700; letter-spacing: .08em;
+    background: rgba(178,30,52,.85); border: 1px solid rgba(255,90,110,.6); color: #fff;
+    padding: 5px 13px; border-radius: 999px; backdrop-filter: blur(4px); }
+  .recbadge .rdot { width: 9px; height: 9px; border-radius: 50%; background: #fff; animation: ping 1s ease-out infinite; }
 
   .metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
   @media (max-width: 520px) { .metrics { grid-template-columns: 1fr; } }
@@ -146,6 +162,25 @@
   .footnote code { font-family: "Spline Sans Mono", monospace; background: var(--panel2); border: 1px solid var(--line2); border-radius: 6px; padding: 1px 6px; font-size: 12px; }
   .disclaimer { color: var(--stress); font-size: 12px; margin-top: 10px; }
   .err { color: var(--hr) !important; }
+
+  /* ---- iPhone / small screens ---- */
+  @media (max-width: 560px) {
+    header { padding: 14px 16px; gap: 10px; }
+    .brand h1 { font-size: 16px; }
+    .chip { display: none; }
+    .chip.privacy { display: inline-block; }
+    .wrap { padding: 16px 14px 32px; }
+    .dropzone { padding: 26px 16px; }
+    .dropzone h2 { font-size: 15px; }
+    .stat { padding: 15px 16px; }
+    .stat .v { font-size: 42px; }
+    .card .value { font-size: 30px; }
+    .stillness { font-size: 12px; padding: 7px 12px; gap: 8px; bottom: 10px; }
+    .stillness .meter { width: 48px; }
+    button.act, .mini { width: 100%; justify-content: center; }
+    .toolbar { gap: 10px; }
+    #waveCanvas { height: 150px; }
+  }
 </style>
 
 <header>
@@ -168,7 +203,7 @@
     <div class="or">— or —</div>
     <div style="margin-top:10px; display:flex; gap:10px; justify-content:center; flex-wrap:wrap;">
       <button class="mini" id="btnFile">Choose video file</button>
-      <button class="mini" id="btnCam">Use live camera instead</button>
+      <button class="mini" id="btnCam">Record 30 s with camera</button>
     </div>
     <input type="file" id="fileInput" accept="video/*" hidden />
   </div>
@@ -201,14 +236,24 @@
       </div>
     </div>
 
+    <!-- experimental HRV-age estimate -->
+    <div class="agebox" id="agebox">
+      <div class="agebox-main">
+        <div class="agebox-k">Estimated HRV age <span class="exp">experimental · for fun</span></div>
+        <div class="agebox-v"><span id="ageRange">—</span> <span class="u">yrs</span></div>
+      </div>
+      <div class="agebox-note" id="ageNote">A rough, momentary guess from your HRV (SDNN &amp; RMSSD), which tends to fall with age. It is <b>not</b> a medical heart age and not a diagnosis — caffeine, stress, fitness, breathing and signal noise all shift it, so it can swing widely between readings.</div>
+    </div>
+
     <div class="grid">
       <section class="panel stage">
         <div class="panel-title">Source · skin ROIs</div>
         <div class="video-box">
-          <video id="video" playsinline muted></video>
+          <video id="video" playsinline webkit-playsinline muted></video>
           <canvas class="overlay" id="overlay"></canvas>
           <div class="badge" id="modeBadge">video</div>
           <div class="quality" id="qualityBadge">signal —</div>
+          <div class="recbadge" id="recBadge" style="display:none"><span class="rdot"></span><span id="recText">REC · 30s</span></div>
           <div class="stillness" id="stillness" style="display:none">
             <span class="ring"></span>
             <span id="stillTxt">Hold still — keep your face steady</span>
@@ -260,7 +305,7 @@
 
     <div class="toolbar">
       <button class="act primary" id="btnAnother">Analyze another video</button>
-      <button class="act" id="btnStop" style="display:none">Stop camera</button>
+      <button class="act" id="btnStop" style="display:none">Stop &amp; analyze now</button>
       <button class="act" id="btnCsv">Download results (CSV)</button>
     </div>
   </div>
@@ -282,6 +327,7 @@ const WIN_SEC=10, STEP_SEC=1, BPM_LOW=42, BPM_HIGH=180;
 const PULSE_LO_HZ=0.7, PULSE_HI_HZ=3.0, RESP_LOW=6, RESP_HIGH=40;
 const PEAK_PROM=0.15, HRV_FS=4.0, LF_BAND=[0.04,0.15], HF_BAND=[0.15,0.40];
 const PROC_W=256, SAMPLE_FPS=30;            // batch sampling rate
+const CAPTURE_SEC=30;                       // live-camera auto-capture length
 const ROIS={
   forehead:[10,67,69,104,108,109,151,299,337,338],
   left_cheek:[116,117,118,119,100,126,142,203,206,207],
@@ -345,6 +391,27 @@ function hrvFreq(rri){if(rri.length<6)return{lfhf:NaN};
   return{lfhf:lf/(hf+1e-12)};}
 function stressLabel(v){if(isNaN(v))return["—","var(--muted)"];if(v<1.5)return["Low","var(--hrv)"];if(v<3)return["Moderate","var(--stress)"];return["High","var(--hr)"];}
 
+/* ─── experimental "HRV age" estimate ───
+   HRV declines with age. We invert two rough log relationships fit to typical
+   resting adult norms (RMSSD ~42ms@25yr→~13ms@70yr; SDNN ~57ms→~25ms) and average
+   them. This is a novelty proxy — very noisy on a short webcam window — so we show
+   it as a wide range, never a single precise number. */
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+function estimateHrvAge(sdnn,rmssd){
+  const e=[];
+  if(rmssd!=null&&!isNaN(rmssd)&&rmssd>1)e.push(clamp(167.6-38.1*Math.log(rmssd),18,85));
+  if(sdnn!=null&&!isNaN(sdnn)&&sdnn>1)e.push(clamp(245.8-54.6*Math.log(sdnn),18,85));
+  if(!e.length)return null;
+  const mid=e.reduce((s,x)=>s+x,0)/e.length;
+  return Math.round(clamp(mid,16,90));        // single estimate
+}
+function renderAge(sdnn,rmssd){
+  const box=$("agebox"),a=estimateHrvAge(sdnn,rmssd);
+  if(a==null){$("ageRange").textContent="—";box.classList.remove("show");return;}
+  $("ageRange").textContent=a;
+  box.classList.add("show");
+}
+
 /* ─── geometry ─── */
 function convexHull(pts){if(pts.length<3)return pts.slice();
   const s=pts.slice().sort((a,b)=>a.x-b.x||a.y-b.y),cross=(o,a,b)=>(a.x-o.x)*(b.y-o.y)-(a.y-o.y)*(b.x-o.x);
@@ -373,6 +440,7 @@ let rows=[],lastFps=SAMPLE_FPS,liveHist=null,liveLastAnalysis=-999;
 let lastWaveform=null;
 let prevNose=null,motionEMA=0;          // head-motion tracking for the stillness hint
 let dbgFrames=0,dbgFaces=0,dbgBright=0;  // batch diagnostics
+let captureStart=null;                   // live-camera 30s timed capture
 
 function resetData(){buffers={forehead:[],left_cheek:[],right_cheek:[]};times=[];noseY=[];rows=[];lastWaveform=null;}
 
@@ -430,7 +498,7 @@ async function analyzeFile(file){
   try{
     // 1) Reset UI + all state up front so previous results can never linger
     stopCamera();
-    $("results").classList.remove("show");$("summary").classList.remove("show");
+    $("results").classList.remove("show");$("summary").classList.remove("show");$("agebox").classList.remove("show");
     $("dropzone").style.display="none";$("stageEmpty").style.display="none";
     $("progress").classList.add("show");
     $("progBar").style.width="0%";$("progPct").textContent="0%";$("progText").textContent="Loading…";
@@ -595,6 +663,7 @@ function showResults(out){
   $("mSdnn").textContent=fmt(s.sdnn);$("mRmssd").textContent=fmt(s.rmssd);$("mLfhf").textContent=fmt(s.lfhf,2);
   const [lbl,col]=stressLabel(s.lfhf);const pill=$("stressPill");pill.textContent=lbl;pill.style.color=col;
   pill.style.background=col==="var(--muted)"?"rgba(126,141,166,.18)":"color-mix(in srgb,"+col+" 20%, transparent)";
+  renderAge(s.sdnn,s.rmssd);
 
   const q=out.quality,ql=q>0.45?["good","var(--hrv)"]:q>0.2?["fair","var(--stress)"]:["weak","var(--hr)"];
   $("qualityBadge").textContent="signal "+ql[0];$("qualityBadge").style.color=ql[1];
@@ -610,19 +679,36 @@ function showResults(out){
 
 /* ─── LIVE CAMERA (optional) ─── */
 async function startCamera(){
-  try{await loadModel();
+  // iOS: camera only works on a secure (https) page, and the request must ride the tap gesture
+  if(!window.isSecureContext || !(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia)){
+    $("progress").classList.add("show");
+    $("progText").innerHTML="<span class='err'>Live camera needs an https page (especially on iPhone). Open this app from an https link, or use “Choose video file” instead — uploads work anywhere.</span>";
+    return;
+  }
+  try{
+    // 1) request the camera FIRST so the user-gesture isn't lost while the model loads (required on iOS)
     stream=await navigator.mediaDevices.getUserMedia({video:{width:{ideal:640},height:{ideal:480},facingMode:"user"},audio:false});
     mode="camera";$("modeBadge").textContent="camera";video.classList.add("mirror");
-    video.loop=false;video.src="";video.srcObject=stream;await video.play();
-    $("dropzone").style.display="none";$("progress").classList.remove("show");
-    $("summary").classList.remove("show");$("results").classList.add("show");
-    $("stageEmpty").style.display="none";$("btnStop").style.display="";
+    video.loop=false;video.src="";video.srcObject=stream;
+    video.setAttribute("playsinline","");video.setAttribute("webkit-playsinline","");
+    await video.play();
+    $("dropzone").style.display="none";
+    $("progress").classList.add("show");$("progBar").style.width="0%";$("progText").textContent="Loading face model…";
+    $("results").classList.remove("show");$("summary").classList.remove("show");
+    $("stageEmpty").style.display="none";
+    // 2) now load the model (network) — camera is already granted and previewing
+    await loadModel();
+    $("progress").classList.remove("show");
+    $("results").classList.add("show");$("btnStop").style.display="";
     $("stillness").style.display="flex";$("stillness").classList.remove("move");
     $("stillTxt").textContent="Hold still — keep your face steady";$("stillMeter").style.width="0%";
-    prevNose=null;motionEMA=0;
+    $("recBadge").style.display="flex";$("recText").textContent="REC · "+CAPTURE_SEC+"s";
+    $("qualityBadge").style.display="none";
+    prevNose=null;motionEMA=0;captureStart=null;fpsBuf=[];
     resetData();liveHist={hr:[],rr:[],sdnn:[],rmssd:[],lfhf:[]};liveLastAnalysis=-999;liveRunning=true;lastTs=0;
     liveLoop();
-  }catch(e){$("progress").classList.add("show");$("progText").innerHTML="<span class='err'>Camera unavailable ("+(e.name||"error")+"). Upload a video instead.</span>";}
+  }catch(e){stopCamera();$("progress").classList.add("show");
+    $("progText").innerHTML="<span class='err'>Camera unavailable ("+(e.name||"error")+"). Use “Choose video file” instead.</span>";}
 }
 function stopCamera(){liveRunning=false;$("stillness").style.display="none";if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}}
 function liveFrame(now){if(!liveRunning)return;if(video.readyState<2){liveLoop();return;}
@@ -639,16 +725,44 @@ function liveFrame(now){if(!liveRunning)return;if(video.readyState<2){liveLoop()
     prevNose=[nx,nyp];
     const fps=estFps();const maxLen=Math.round(45*fps);
     if(times.length>maxLen){const d=times.length-maxLen;times.splice(0,d);noseY.splice(0,d);for(const k in buffers)buffers[k].splice(0,d);}
-    if(tSec-liveLastAnalysis>=STEP_SEC){liveLastAnalysis=tSec;liveAnalyse(fps);}}
+    if(captureStart===null)captureStart=tSec;
+    const elapsed=tSec-captureStart;
+    const remain=Math.max(0,Math.ceil(CAPTURE_SEC-elapsed));
+    $("recText").textContent="REC · "+remain+"s";
+    $("infoChip").textContent="Recording "+Math.min(100,Math.round(100*elapsed/CAPTURE_SEC))+"%";
+    if(tSec-liveLastAnalysis>=STEP_SEC){liveLastAnalysis=tSec;liveAnalyse(fps);}
+    if(elapsed>=CAPTURE_SEC){finishCapture();return;}}
   liveLoop();}
+
+// Stop the live camera after the timed window and run the full batch analysis on what we captured.
+function finishCapture(){
+  if(!liveRunning&&!stream)return;
+  liveRunning=false;
+  if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}
+  try{video.pause();}catch(e){}
+  $("stillness").style.display="none";$("recBadge").style.display="none";$("btnStop").style.display="none";$("qualityBadge").style.display="";
+  let fps=30;
+  if(times.length>5){const dts=[];for(let i=1;i<times.length;i++){const d=times[i]-times[i-1];if(d>0&&d<1)dts.push(d);}
+    if(dts.length){dts.sort((a,b)=>a-b);fps=1/dts[dts.length>>1];}}
+  fps=Math.min(60,Math.max(10,fps));
+  const captured=times.length>1?times[times.length-1]-times[0]:0;
+  if(times.length<Math.round(fps*4)||captured<4){
+    $("results").classList.remove("show");$("summary").classList.remove("show");$("agebox").classList.remove("show");
+    $("dropzone").style.display="";$("progress").classList.add("show");
+    $("progText").innerHTML="<span class='err'>Capture too short or face not held steady (only "+captured.toFixed(1)+"s usable). Tap the camera again and keep your face centred, lit, and still.</span>";
+    return;}
+  $("progText").textContent="Computing vitals…";
+  const out=analyseBatch(fps);
+  if(!out){$("progress").classList.add("show");$("progText").innerHTML="<span class='err'>Couldn't extract a clean pulse — try again with even lighting and minimal motion.</span>";return;}
+  showResults(out);
+  $("infoChip").textContent=CAPTURE_SEC+"s capture";
+}
 function liveLoop(){if(!liveRunning)return;
   if(video.requestVideoFrameCallback)video.requestVideoFrameCallback(liveFrame);
   else requestAnimationFrame(()=>liveFrame(performance.now()));}
 let fpsBuf=[];
 function estFps(){if(times.length>1){const dt=times[times.length-1]-times[times.length-2];if(dt>0&&dt<1){fpsBuf.push(1/dt);if(fpsBuf.length>30)fpsBuf.shift();}}return fpsBuf.length?mean(fpsBuf):30;}
-function liveAnalyse(fps){const WIN=Math.round(WIN_SEC*fps);if(times.length<WIN){
-    $("infoChip").textContent="Collecting "+Math.round(100*times.length/WIN)+"%";return;}
-  $("infoChip").textContent="Live";
+function liveAnalyse(fps){const WIN=Math.round(WIN_SEC*fps);if(times.length<WIN)return;  // not enough yet for a preview reading
   const slice=a=>a.slice(a.length-WIN),tWin=slice(times);
   const sigs=[],wts=[];for(const nm of Object.keys(ROIS)){const buf=slice(buffers[nm]);
     const f=bandpass(pos(buf),fps,PULSE_LO_HZ,PULSE_HI_HZ);sigs.push(f);wts.push(snrWeight(f,fps));}
@@ -671,6 +785,7 @@ function liveAnalyse(fps){const WIN=Math.round(WIN_SEC*fps);if(times.length<WIN)
   pill.style.background=col==="var(--muted)"?"rgba(126,141,166,.18)":"color-mix(in srgb,"+col+" 20%, transparent)";
   spark("sparkHr",liveHist.hr,"#ff4d6d");spark("sparkRr",liveHist.rr,"#38d9d2");
   spark("sparkSdnn",liveHist.sdnn,"#4ade80");spark("sparkRmssd",liveHist.rmssd,"#4ade80");spark("sparkLfhf",liveHist.lfhf,"#fbbf24");
+  renderAge(sdnn,rmssd);
   drawWaveform();$("summary").classList.add("show");}
 
 /* ─── charts ─── */
@@ -706,9 +821,9 @@ function downloadCsv(){if(!rows.length)return;
 /* ─── reset ─── */
 function reset(){stopCamera();cancelBatch=true;try{video.pause();}catch(e){}
   video.src="";video.srcObject=null;resetData();octx.clearRect(0,0,overlay.width,overlay.height);
-  $("results").classList.remove("show");$("summary").classList.remove("show");
+  $("results").classList.remove("show");$("summary").classList.remove("show");$("agebox").classList.remove("show");
   $("progress").classList.remove("show");$("progBar").style.width="0%";$("progPct").textContent="0%";
-  $("stageEmpty").style.display="";$("dropzone").style.display="";$("infoChip").textContent="Ready";$("stillness").style.display="none";}
+  $("stageEmpty").style.display="";$("dropzone").style.display="";$("infoChip").textContent="Ready";$("stillness").style.display="none";$("recBadge").style.display="none";$("qualityBadge").style.display="";}
 
 /* ─── wiring ─── */
 const dz=$("dropzone"),fileInput=$("fileInput");
@@ -721,7 +836,7 @@ dz.addEventListener("dragleave",()=>dz.classList.remove("drag"));
 dz.addEventListener("drop",e=>{e.preventDefault();dz.classList.remove("drag");
   const f=e.dataTransfer.files[0];if(f&&f.type.startsWith("video"))analyzeFile(f);});
 $("btnAnother").onclick=reset;
-$("btnStop").onclick=()=>{stopCamera();$("btnStop").style.display="none";$("stillness").style.display="none";$("infoChip").textContent="Stopped";};
+$("btnStop").onclick=()=>{ if(liveRunning){ finishCapture(); } else { stopCamera();$("btnStop").style.display="none";$("recBadge").style.display="none";$("stillness").style.display="none";$("infoChip").textContent="Stopped"; } };
 $("btnCsv").onclick=downloadCsv;
 window.addEventListener("resize",()=>{if(lastWaveform)drawWaveform();});
 </script>
