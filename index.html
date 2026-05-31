@@ -1,0 +1,727 @@
+<!--
+  rPPG Vitals Analyzer — single-file, runs entirely in the browser.
+  Upload a video -> it auto-processes every frame -> shows Heart Rate,
+  Respiratory Rate and HRV (plus a stress index and trend charts).
+  Optional live-camera mode is also included.
+
+  Port of a Python (MediaPipe + POS + SciPy) pipeline to client-side JS.
+  No install, no server, nothing uploaded anywhere — 100% on-device.
+
+  Needs internet on first open (loads MediaPipe + the face model from CDN).
+-->
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>rPPG Vitals Analyzer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Spline+Sans:wght@400;500;600;700&family=Spline+Sans+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+
+<style>
+  :root {
+    --bg:#0a0e14; --bg2:#0e131c; --panel:#121925; --panel2:#161f2e;
+    --line:#1f2a3c; --line2:#2a3850; --ink:#e7edf6; --muted:#7e8da6; --faint:#495469;
+    --hr:#ff4d6d; --resp:#38d9d2; --hrv:#4ade80; --stress:#fbbf24;
+    --glow:0 0 0 1px rgba(255,255,255,0.02), 0 18px 40px -20px rgba(0,0,0,0.8);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); }
+  body {
+    font-family: "Spline Sans", system-ui, sans-serif; color: var(--ink); min-height: 100vh;
+    background:
+      radial-gradient(1200px 600px at 80% -10%, rgba(255,77,109,0.06), transparent 60%),
+      radial-gradient(900px 500px at -10% 110%, rgba(56,217,210,0.05), transparent 55%), var(--bg);
+    -webkit-font-smoothing: antialiased;
+  }
+  .mono { font-family: "Spline Sans Mono", ui-monospace, monospace; }
+
+  header {
+    display: flex; align-items: center; gap: 18px; padding: 18px 26px;
+    border-bottom: 1px solid var(--line);
+    background: linear-gradient(180deg, rgba(20,28,42,0.6), transparent); flex-wrap: wrap;
+  }
+  .brand { display: flex; align-items: center; gap: 13px; }
+  .pulse-dot { width: 12px; height: 12px; border-radius: 50%; background: var(--hr);
+    box-shadow: 0 0 0 0 rgba(255,77,109,0.7); animation: ping 1.1s ease-out infinite; }
+  @keyframes ping { 0%{box-shadow:0 0 0 0 rgba(255,77,109,.55);} 70%{box-shadow:0 0 0 9px rgba(255,77,109,0);} 100%{box-shadow:0 0 0 0 rgba(255,77,109,0);} }
+  .brand h1 { font-size: 18px; font-weight: 700; letter-spacing: -.01em; margin: 0; }
+  .brand .sub { font-size: 11px; color: var(--muted); letter-spacing: .18em; text-transform: uppercase; }
+  .header-spacer { flex: 1; }
+  .chip { font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted);
+    border: 1px solid var(--line2); border-radius: 999px; padding: 6px 12px; white-space: nowrap; }
+  .chip b { color: var(--ink); font-weight: 600; }
+  .privacy { color: var(--hrv); border-color: rgba(74,222,128,.3); }
+
+  .wrap { padding: 22px 26px 40px; max-width: 1320px; margin: 0 auto; }
+
+  /* dropzone */
+  .dropzone {
+    border: 1.5px dashed var(--line2); border-radius: 18px; padding: 34px 24px; text-align: center;
+    background: linear-gradient(180deg, var(--panel), var(--bg2)); transition: .18s ease; cursor: pointer;
+  }
+  .dropzone:hover, .dropzone.drag { border-color: var(--hr); background: linear-gradient(180deg, #1a2230, var(--bg2)); }
+  .dropzone .ic { color: var(--hr); margin-bottom: 8px; }
+  .dropzone h2 { margin: 4px 0 4px; font-size: 17px; }
+  .dropzone p { margin: 0; color: var(--muted); font-size: 13px; }
+  .dropzone .or { color: var(--faint); font-size: 12px; margin-top: 14px; }
+  .mini { font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; border: 1px solid var(--line2);
+    background: var(--panel2); color: var(--ink); padding: 8px 14px; border-radius: 10px; transition: .15s; }
+  .mini:hover { border-color: #3a4d6e; }
+
+  /* progress */
+  .progress { margin-top: 18px; display: none; }
+  .progress.show { display: block; }
+  .bar { height: 8px; border-radius: 999px; background: var(--panel2); overflow: hidden; border: 1px solid var(--line); }
+  .bar > span { display: block; height: 100%; width: 0%; background: linear-gradient(90deg, var(--hr), var(--resp)); transition: width .12s linear; }
+  .progress .lbl { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); margin-bottom: 7px; }
+  .progress .lbl b { color: var(--ink); }
+
+  /* summary banner */
+  .summary { display: none; grid-template-columns: repeat(3, 1fr); gap: 16px; margin: 22px 0 4px; }
+  .summary.show { display: grid; }
+  @media (max-width: 760px) { .summary { grid-template-columns: 1fr; } }
+  .stat { background: linear-gradient(180deg, var(--panel), var(--bg2)); border: 1px solid var(--line);
+    border-radius: 18px; padding: 18px 20px; box-shadow: var(--glow); position: relative; overflow: hidden; }
+  .stat::after { content:""; position:absolute; inset:0 0 auto 0; height:3px; background: var(--c); opacity:.9; }
+  .stat .k { font-size: 11px; letter-spacing: .16em; text-transform: uppercase; color: var(--muted); display:flex; align-items:center; gap:8px; }
+  .stat .v { font-family: "Spline Sans Mono", monospace; font-size: 52px; font-weight: 700; line-height: 1; margin-top: 8px; color: var(--c); letter-spacing: -.02em; }
+  .stat .v .u { font-size: 15px; font-weight: 500; color: var(--muted); margin-left: 6px; }
+  .stat .sub2 { font-size: 12px; color: var(--faint); margin-top: 8px; }
+  .stat .sub2 b { color: var(--ink); font-weight: 600; }
+
+  .grid { display: grid; grid-template-columns: minmax(0,1.35fr) minmax(0,1fr); gap: 20px; align-items: start; margin-top: 18px; }
+  @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+  .panel { background: linear-gradient(180deg, var(--panel), var(--bg2)); border: 1px solid var(--line); border-radius: 18px; box-shadow: var(--glow); overflow: hidden; }
+  .panel-title { font-size: 11px; letter-spacing: .16em; text-transform: uppercase; color: var(--muted); padding: 14px 18px 0; }
+
+  .stage { position: relative; }
+  .video-box { position: relative; margin: 12px 16px 16px; border-radius: 14px; overflow: hidden; background: #05080d; aspect-ratio: 4/3; }
+  video, .overlay { position: absolute; inset: 0; width: 100%; height: 100%; }
+  video { object-fit: cover; }
+  video.mirror { transform: scaleX(-1); }
+  .overlay { pointer-events: none; }
+  .badge { position: absolute; top: 12px; left: 12px; font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
+    background: rgba(8,12,20,.7); border: 1px solid var(--line2); padding: 5px 10px; border-radius: 999px; color: var(--muted); backdrop-filter: blur(4px); }
+  .quality { position: absolute; top: 12px; right: 12px; font-size: 11px; letter-spacing:.1em; text-transform: uppercase;
+    background: rgba(8,12,20,.7); border:1px solid var(--line2); padding:5px 10px; border-radius:999px; color: var(--muted); backdrop-filter: blur(4px); }
+  .stage-empty { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; color: var(--faint); }
+  .stillness { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%);
+    display: flex; align-items: center; gap: 11px; background: rgba(8,12,20,.74); border: 1px solid var(--line2);
+    border-radius: 999px; padding: 8px 15px; color: var(--ink); font-size: 13px; font-weight: 600;
+    backdrop-filter: blur(6px); white-space: nowrap; transition: border-color .2s, color .2s; }
+  .stillness .ring { width: 11px; height: 11px; border-radius: 50%; background: var(--hrv); flex: none; }
+  .stillness .meter { width: 62px; height: 5px; border-radius: 999px; background: var(--panel2); overflow: hidden; flex: none; }
+  .stillness .meter > span { display: block; height: 100%; width: 0%; background: var(--hrv); transition: width .15s, background .2s; }
+  .stillness.move { border-color: var(--hr); color: #ffd9df; }
+  .stillness.move .ring { background: var(--hr); animation: ping 1s ease-out infinite; }
+  .stillness.move .meter > span { background: var(--hr); }
+
+  .metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 520px) { .metrics { grid-template-columns: 1fr; } }
+  .card { background: linear-gradient(180deg, var(--panel), var(--bg2)); border: 1px solid var(--line); border-radius: 16px; padding: 15px 16px 10px; box-shadow: var(--glow); }
+  .card .label { font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); display: flex; align-items: center; gap: 7px; }
+  .card .dot { width: 8px; height: 8px; border-radius: 50%; }
+  .card .value { font-family: "Spline Sans Mono", monospace; font-size: 34px; font-weight: 700; line-height: 1.05; margin-top: 6px; letter-spacing: -.02em; }
+  .card .value .u { font-size: 13px; font-weight: 500; color: var(--muted); margin-left: 5px; }
+  .card .range { font-size: 11px; color: var(--faint); margin-top: 1px; }
+  .card .spark { width: 100%; height: 34px; margin-top: 8px; display: block; }
+  .card.span2 { grid-column: 1/-1; }
+  .stress-pill { font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; padding: 3px 9px; border-radius: 999px; margin-left: 8px; }
+
+  .wave-panel { margin-top: 20px; }
+  .wave-head { display: flex; align-items: baseline; gap: 14px; padding: 14px 18px 4px; }
+  .wave-head .t { font-size: 11px; letter-spacing: .16em; text-transform: uppercase; color: var(--muted); }
+  .wave-head .meta { font-size: 12px; color: var(--faint); margin-left: auto; }
+  #waveCanvas { width: 100%; height: 200px; display: block; }
+
+  .results { display: none; }
+  .results.show { display: block; }
+  .toolbar { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 20px; }
+  button.act { font: inherit; font-weight: 600; font-size: 14px; cursor: pointer; border: 1px solid var(--line2);
+    background: var(--panel2); color: var(--ink); padding: 11px 18px; border-radius: 11px; transition: .15s; }
+  button.act:hover { border-color: #3a4d6e; transform: translateY(-1px); }
+  button.act.primary { background: linear-gradient(180deg,#ff5d7a,#e23a59); border-color: #ff6b85; color:#fff; }
+
+  .footnote { color: var(--muted); font-size: 13px; line-height: 1.6; margin-top: 26px; border-top: 1px solid var(--line); padding-top: 18px; }
+  .footnote b { color: var(--ink); }
+  .footnote code { font-family: "Spline Sans Mono", monospace; background: var(--panel2); border: 1px solid var(--line2); border-radius: 6px; padding: 1px 6px; font-size: 12px; }
+  .disclaimer { color: var(--stress); font-size: 12px; margin-top: 10px; }
+  .err { color: var(--hr) !important; }
+</style>
+
+<header>
+  <div class="brand">
+    <span class="pulse-dot"></span>
+    <div><h1>rPPG Vitals Analyzer</h1><div class="sub">Contactless · POS + MediaPipe</div></div>
+  </div>
+  <div class="header-spacer"></div>
+  <span class="chip" id="infoChip">Ready</span>
+  <span class="chip privacy">On-device · nothing uploaded</span>
+</header>
+
+<div class="wrap">
+
+  <!-- UPLOAD -->
+  <div class="dropzone" id="dropzone">
+    <div class="ic"><svg width="42" height="42" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M12 16V4m0 0l-4 4m4-4l4 4"/><path d="M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2"/></svg></div>
+    <h2>Drop a face video here to analyze</h2>
+    <p>The whole clip is processed automatically — then you'll see heart rate, respiratory rate and HRV.</p>
+    <div class="or">— or —</div>
+    <div style="margin-top:10px; display:flex; gap:10px; justify-content:center; flex-wrap:wrap;">
+      <button class="mini" id="btnFile">Choose video file</button>
+      <button class="mini" id="btnCam">Use live camera instead</button>
+    </div>
+    <input type="file" id="fileInput" accept="video/*" hidden />
+  </div>
+
+  <!-- PROGRESS -->
+  <div class="progress" id="progress">
+    <div class="lbl"><span id="progText">Analyzing…</span><b id="progPct">0%</b></div>
+    <div class="bar"><span id="progBar"></span></div>
+  </div>
+
+  <!-- RESULTS -->
+  <div class="results" id="results">
+
+    <!-- summary banner: HR / RR / HRV -->
+    <div class="summary" id="summary">
+      <div class="stat" style="--c:var(--hr)">
+        <div class="k"><span class="dot" style="width:8px;height:8px;border-radius:50%;background:var(--hr)"></span>Heart rate</div>
+        <div class="v"><span id="sHr">—</span><span class="u">bpm</span></div>
+        <div class="sub2">range <b id="sHrRange">—</b> · resting 60–100</div>
+      </div>
+      <div class="stat" style="--c:var(--resp)">
+        <div class="k"><span class="dot" style="width:8px;height:8px;border-radius:50%;background:var(--resp)"></span>Respiratory rate</div>
+        <div class="v"><span id="sRr">—</span><span class="u">br/min</span></div>
+        <div class="sub2">normal 12–20</div>
+      </div>
+      <div class="stat" style="--c:var(--hrv)">
+        <div class="k"><span class="dot" style="width:8px;height:8px;border-radius:50%;background:var(--hrv)"></span>HRV</div>
+        <div class="v"><span id="sSdnn">—</span><span class="u">ms SDNN</span></div>
+        <div class="sub2">RMSSD <b id="sRmssd">—</b> ms · pNN50 <b id="sPnn">—</b>%</div>
+      </div>
+    </div>
+
+    <div class="grid">
+      <section class="panel stage">
+        <div class="panel-title">Source · skin ROIs</div>
+        <div class="video-box">
+          <video id="video" playsinline muted></video>
+          <canvas class="overlay" id="overlay"></canvas>
+          <div class="badge" id="modeBadge">video</div>
+          <div class="quality" id="qualityBadge">signal —</div>
+          <div class="stillness" id="stillness" style="display:none">
+            <span class="ring"></span>
+            <span id="stillTxt">Hold still — keep your face steady</span>
+            <span class="meter"><span id="stillMeter"></span></span>
+          </div>
+          <div class="stage-empty" id="stageEmpty">no source</div>
+        </div>
+      </section>
+
+      <section class="metrics">
+        <div class="card">
+          <div class="label"><span class="dot" style="background:var(--hr)"></span>Heart rate (trend)</div>
+          <div class="value" style="color:var(--hr)"><span id="mHr">—</span><span class="u">bpm</span></div>
+          <div class="range">per 10 s window</div>
+          <canvas class="spark" id="sparkHr"></canvas>
+        </div>
+        <div class="card">
+          <div class="label"><span class="dot" style="background:var(--resp)"></span>Respiration (trend)</div>
+          <div class="value" style="color:var(--resp)"><span id="mRr">—</span><span class="u">br/min</span></div>
+          <div class="range">nose-tip motion</div>
+          <canvas class="spark" id="sparkRr"></canvas>
+        </div>
+        <div class="card">
+          <div class="label"><span class="dot" style="background:var(--hrv)"></span>HRV · SDNN</div>
+          <div class="value" style="color:var(--hrv)"><span id="mSdnn">—</span><span class="u">ms</span></div>
+          <div class="range">typical 20–100</div>
+          <canvas class="spark" id="sparkSdnn"></canvas>
+        </div>
+        <div class="card">
+          <div class="label"><span class="dot" style="background:var(--hrv)"></span>HRV · RMSSD</div>
+          <div class="value" style="color:var(--hrv)"><span id="mRmssd">—</span><span class="u">ms</span></div>
+          <div class="range">typical 20–80</div>
+          <canvas class="spark" id="sparkRmssd"></canvas>
+        </div>
+        <div class="card span2">
+          <div class="label"><span class="dot" style="background:var(--stress)"></span>Autonomic balance · LF/HF
+            <span class="stress-pill" id="stressPill" style="background:rgba(126,141,166,.18);color:var(--muted)">—</span></div>
+          <div class="value" style="color:var(--stress)"><span id="mLfhf">—</span><span class="u">ratio</span></div>
+          <div class="range">low &lt;1.5 · moderate 1.5–3 · high &gt;3</div>
+          <canvas class="spark" id="sparkLfhf"></canvas>
+        </div>
+      </section>
+    </div>
+
+    <section class="panel wave-panel">
+      <div class="wave-head"><span class="t">rPPG pulse waveform</span><span class="meta" id="waveMeta"></span></div>
+      <canvas id="waveCanvas"></canvas>
+    </section>
+
+    <div class="toolbar">
+      <button class="act primary" id="btnAnother">Analyze another video</button>
+      <button class="act" id="btnStop" style="display:none">Stop camera</button>
+      <button class="act" id="btnCsv">Download results (CSV)</button>
+    </div>
+  </div>
+
+  <div class="footnote">
+    <b>Share it:</b> one file. Send <code>rppg_monitor.html</code> to anyone — they open it, drop in a video, and get results on their own laptop. Nothing is uploaded; all processing is local.<br/>
+    <b>Best videos:</b> face well-lit and fairly still, 15–60 s, looking toward the camera. The first reading needs a 10 s window, so use clips of at least ~12 s.<br/>
+    <b>Live camera</b> may be blocked when opening the raw <code>file://</code> page; uploading a video always works, or serve it from <code>http://localhost</code> / any <code>https://</code> URL.
+    <div class="disclaimer">⚠ Demonstration / wellness curiosity only — not a medical device, not for diagnosis.</div>
+  </div>
+</div>
+
+<script type="module">
+import { FaceLandmarker, FilesetResolver }
+  from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10/vision_bundle.mjs";
+
+/* ─── CONFIG (mirrors the Python script) ─── */
+const WIN_SEC=10, STEP_SEC=1, BPM_LOW=42, BPM_HIGH=180;
+const PULSE_LO_HZ=0.7, PULSE_HI_HZ=3.0, RESP_LOW=6, RESP_HIGH=40;
+const PEAK_PROM=0.15, HRV_FS=4.0, LF_BAND=[0.04,0.15], HF_BAND=[0.15,0.40];
+const PROC_W=256, SAMPLE_FPS=30;            // batch sampling rate
+const ROIS={
+  forehead:[10,67,69,104,108,109,151,299,337,338],
+  left_cheek:[116,117,118,119,100,126,142,203,206,207],
+  right_cheek:[345,346,347,348,329,355,371,423,426,427],
+};
+const NOSE_TIP=1;
+
+/* ─── DSP ─── */
+const mean=a=>a.reduce((s,x)=>s+x,0)/a.length;
+const std=a=>{const m=mean(a);return Math.sqrt(a.reduce((s,x)=>s+(x-m)**2,0)/a.length);};
+const nextPow2=n=>{let p=1;while(p<n)p<<=1;return p;};
+function fft(re,im,inv=false){const n=re.length;
+  for(let i=1,j=0;i<n;i++){let b=n>>1;for(;j&b;b>>=1)j^=b;j^=b;if(i<j){[re[i],re[j]]=[re[j],re[i]];[im[i],im[j]]=[im[j],im[i]];}}
+  for(let len=2;len<=n;len<<=1){const ang=(inv?2:-2)*Math.PI/len,wr=Math.cos(ang),wi=Math.sin(ang),h=len>>1;
+    for(let i=0;i<n;i+=len){let cr=1,ci=0;for(let k=0;k<h;k++){const a=i+k,b=a+h,vr=re[b]*cr-im[b]*ci,vi=re[b]*ci+im[b]*cr;
+      re[b]=re[a]-vr;im[b]=im[a]-vi;re[a]+=vr;im[a]+=vi;const ncr=cr*wr-ci*wi;ci=cr*wi+ci*wr;cr=ncr;}}}
+  if(inv)for(let i=0;i<n;i++){re[i]/=n;im[i]/=n;}}
+function hann(n){const w=new Float64Array(n);for(let i=0;i<n;i++)w[i]=0.5-0.5*Math.cos(2*Math.PI*i/(n-1));return w;}
+function dominantBpm(sig,fs,lo,hi){const N=sig.length;if(N<8)return NaN;
+  const m=mean([...sig]),w=hann(N),Nfft=nextPow2(Math.max(N,2048));
+  const re=new Float64Array(Nfft),im=new Float64Array(Nfft);
+  for(let i=0;i<N;i++)re[i]=(sig[i]-m)*w[i];fft(re,im);
+  let best=-1,bf=NaN;for(let k=0;k<Nfft/2;k++){const bpm=k*fs/Nfft*60;if(bpm<lo||bpm>hi)continue;
+    const mg=re[k]*re[k]+im[k]*im[k];if(mg>best){best=mg;bf=bpm;}}return bf;}
+function bandpass(sig,fs,loHz,hiHz){const N=sig.length,Nfft=nextPow2(N);
+  const re=new Float64Array(Nfft),im=new Float64Array(Nfft),m=mean([...sig]);
+  for(let i=0;i<N;i++)re[i]=sig[i]-m;fft(re,im);
+  for(let k=0;k<=Nfft/2;k++){const f=k*fs/Nfft;if(f<loHz||f>hiHz){re[k]=im[k]=0;const mir=(Nfft-k)%Nfft;re[mir]=im[mir]=0;}}
+  fft(re,im,true);return re.subarray(0,N);}
+function pos(rgb){const n=rgb.length;let mr=0,mg=0,mb=0;for(const p of rgb){mr+=p[0];mg+=p[1];mb+=p[2];}
+  mr=(mr/n)||1e-6;mg=(mg/n)||1e-6;mb=(mb/n)||1e-6;const X=new Float64Array(n),Y=new Float64Array(n);
+  for(let i=0;i<n;i++){const rn=rgb[i][0]/mr,gn=rgb[i][1]/mg,bn=rgb[i][2]/mb;X[i]=gn-bn;Y[i]=-2*rn+gn+bn;}
+  const al=std([...X])/(std([...Y])+1e-8),o=new Float64Array(n);for(let i=0;i<n;i++)o[i]=X[i]+al*Y[i];return o;}
+function snrWeight(sig,fs){const N=sig.length,w=hann(N),Nfft=nextPow2(Math.max(N,256));
+  const re=new Float64Array(Nfft),im=new Float64Array(Nfft),m=mean([...sig]);
+  for(let i=0;i<N;i++)re[i]=(sig[i]-m)*w[i];fft(re,im);let band=0,all=0;
+  for(let k=1;k<Nfft/2;k++){const f=k*fs/Nfft,p=re[k]*re[k]+im[k]*im[k];if(f>=0.1)all+=p;if(f>=BPM_LOW/60&&f<=BPM_HIGH/60)band+=p;}
+  return band/(all+1e-12);}
+function findPeaks(x,minDist,minProm){const cand=[];
+  for(let i=1;i<x.length-1;i++)if(x[i]>x[i-1]&&x[i]>=x[i+1])cand.push(i);
+  const kept=[];for(const p of cand){let li=p,lm=x[p];while(li>0&&x[li-1]<x[p]){li--;if(x[li]<lm)lm=x[li];}
+    let ri=p,rm=x[p];while(ri<x.length-1&&x[ri+1]<x[p]){ri++;if(x[ri]<rm)rm=x[ri];}
+    if(x[p]-Math.max(lm,rm)>=minProm)kept.push({i:p,v:x[p]});}
+  kept.sort((a,b)=>b.v-a.v);const taken=[];
+  for(const r of kept)if(taken.every(t=>Math.abs(t-r.i)>=minDist))taken.push(r.i);
+  return taken.sort((a,b)=>a-b);}
+function hrvTime(rri){if(rri.length<3)return{sdnn:NaN,rmssd:NaN,pnn50:NaN};
+  const m=mean([...rri]),sdnn=Math.sqrt(rri.reduce((s,x)=>s+(x-m)**2,0)/(rri.length-1));
+  const d=[];for(let i=1;i<rri.length;i++)d.push(rri[i]-rri[i-1]);
+  return{sdnn,rmssd:Math.sqrt(mean(d.map(v=>v*v))),pnn50:100*d.filter(v=>Math.abs(v)>50).length/d.length};}
+function hrvFreq(rri){if(rri.length<6)return{lfhf:NaN};
+  const t=[];let acc=0;for(const v of rri){acc+=v/1000;t.push(acc);}const t0=t[0];for(let i=0;i<t.length;i++)t[i]-=t0;
+  const dur=t[t.length-1],M=Math.floor(dur*HRV_FS);if(M<8)return{lfhf:NaN};
+  const ru=new Float64Array(M);let j=0;
+  for(let i=0;i<M;i++){const tt=i/HRV_FS;while(j<t.length-2&&t[j+1]<tt)j++;
+    const t1=t[j],t2=t[j+1],r1=rri[j],r2=rri[j+1];ru[i]=(t2===t1)?r1:r1+(r2-r1)*(tt-t1)/(t2-t1);}
+  const w=hann(M),Nfft=nextPow2(Math.max(M,256)),re=new Float64Array(Nfft),im=new Float64Array(Nfft),m=mean([...ru]);
+  for(let i=0;i<M;i++)re[i]=(ru[i]-m)*w[i];fft(re,im);let lf=0,hf=0;
+  for(let k=1;k<Nfft/2;k++){const f=k*HRV_FS/Nfft,p=re[k]*re[k]+im[k]*im[k];
+    if(f>=LF_BAND[0]&&f<=LF_BAND[1])lf+=p;if(f>=HF_BAND[0]&&f<=HF_BAND[1])hf+=p;}
+  return{lfhf:lf/(hf+1e-12)};}
+function stressLabel(v){if(isNaN(v))return["—","var(--muted)"];if(v<1.5)return["Low","var(--hrv)"];if(v<3)return["Moderate","var(--stress)"];return["High","var(--hr)"];}
+
+/* ─── geometry ─── */
+function convexHull(pts){if(pts.length<3)return pts.slice();
+  const s=pts.slice().sort((a,b)=>a.x-b.x||a.y-b.y),cross=(o,a,b)=>(a.x-o.x)*(b.y-o.y)-(a.y-o.y)*(b.x-o.x);
+  const lo=[];for(const p of s){while(lo.length>=2&&cross(lo[lo.length-2],lo[lo.length-1],p)<=0)lo.pop();lo.push(p);}
+  const up=[];for(let i=s.length-1;i>=0;i--){const p=s[i];while(up.length>=2&&cross(up[up.length-2],up[up.length-1],p)<=0)up.pop();up.push(p);}
+  lo.pop();up.pop();return lo.concat(up);}
+function inPoly(x,y,poly){let inside=false;for(let i=0,j=poly.length-1;i<poly.length;j=i++){
+  const xi=poly[i].x,yi=poly[i].y,xj=poly[j].x,yj=poly[j].y;
+  if(((yi>y)!==(yj>y))&&(x<(xj-xi)*(y-yi)/(yj-yi)+xi))inside=!inside;}return inside;}
+function roiMeanRGB(img,w,h,lm,idx){
+  const poly=convexHull(idx.map(i=>({x:lm[i].x*w,y:lm[i].y*h})));
+  let minX=w,maxX=0,minY=h,maxY=0;for(const p of poly){minX=Math.min(minX,p.x);maxX=Math.max(maxX,p.x);minY=Math.min(minY,p.y);maxY=Math.max(maxY,p.y);}
+  minX=Math.max(0,minX|0);maxX=Math.min(w-1,maxX|0);minY=Math.max(0,minY|0);maxY=Math.min(h-1,maxY|0);
+  let r=0,g=0,b=0,n=0;const d=img.data;
+  for(let y=minY;y<=maxY;y++)for(let x=minX;x<=maxX;x++)if(inPoly(x+.5,y+.5,poly)){const o=(y*w+x)*4;r+=d[o];g+=d[o+1];b+=d[o+2];n++;}
+  return n>0?[r/n,g/n,b/n]:null;}
+
+/* ─── DOM / STATE ─── */
+const $=id=>document.getElementById(id);
+const video=$("video"),overlay=$("overlay"),octx=overlay.getContext("2d");
+const proc=document.createElement("canvas"),pctx=proc.getContext("2d",{willReadFrequently:true});
+let landmarker=null,mode="video",stream=null,liveRunning=false,cancelBatch=false,lastTs=0;
+let lastMpTs=0;                          // shared monotonic clock for MediaPipe (must never go backwards)
+let buffers={forehead:[],left_cheek:[],right_cheek:[]},times=[],noseY=[];
+let rows=[],lastFps=SAMPLE_FPS,liveHist=null,liveLastAnalysis=-999;
+let lastWaveform=null;
+let prevNose=null,motionEMA=0;          // head-motion tracking for the stillness hint
+let dbgFrames=0,dbgFaces=0,dbgBright=0;  // batch diagnostics
+
+function resetData(){buffers={forehead:[],left_cheek:[],right_cheek:[]};times=[];noseY=[];rows=[];lastWaveform=null;}
+
+/* ─── model ─── */
+async function loadModel(){if(landmarker)return;
+  $("infoChip").textContent="Loading model…";
+  const fs=await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10/wasm");
+  const opts={baseOptions:{modelAssetPath:"https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",delegate:"GPU"},runningMode:"VIDEO",numFaces:1};
+  try{landmarker=await FaceLandmarker.createFromOptions(fs,opts);}
+  catch(e){opts.baseOptions.delegate="CPU";landmarker=await FaceLandmarker.createFromOptions(fs,opts);}
+  $("infoChip").textContent="Ready";}
+
+function sizeCanvases(){const vw=video.videoWidth,vh=video.videoHeight;
+  if(overlay.width!==vw){overlay.width=vw;overlay.height=vh;}
+  const pw=PROC_W,ph=Math.round(PROC_W*vh/vw);if(proc.width!==pw){proc.width=pw;proc.height=ph;}return{vw,vh,pw,ph};}
+const nextTs=d=>{lastMpTs=Math.max(lastMpTs+1,Math.round(d));return lastMpTs;};  // strictly increasing for detectForVideo
+
+function drawROIs(lm,vw,vh,mirror){octx.clearRect(0,0,overlay.width,overlay.height);octx.save();
+  if(mirror){octx.translate(vw,0);octx.scale(-1,1);}
+  octx.lineWidth=Math.max(1.2,vw/480);octx.strokeStyle="rgba(56,217,210,.9)";octx.fillStyle="rgba(56,217,210,.10)";
+  for(const idx of Object.values(ROIS)){const hull=convexHull(idx.map(i=>({x:lm[i].x*vw,y:lm[i].y*vh})));
+    octx.beginPath();hull.forEach((p,k)=>k?octx.lineTo(p.x,p.y):octx.moveTo(p.x,p.y));octx.closePath();octx.fill();octx.stroke();}
+  octx.restore();}
+
+/* ─── stillness / head-motion hint (live camera only) ─── */
+function updateStillness(m){
+  const box=$("stillness");if(box.style.display==="none")return;
+  const level=Math.min(100,m/0.012*100);          // 0–100% motion meter
+  $("stillMeter").style.width=level+"%";
+  const moving=m>0.0045;                            // threshold: too much head motion
+  box.classList.toggle("move",moving);
+  $("stillTxt").textContent=moving?"Too much motion — please hold still":"Steady — good for measuring";
+}
+
+/* ─── BATCH: process whole uploaded video automatically ─── */
+// Sample one presented frame: detect face, store ROI colours + nose. Returns true if a face was found.
+function sampleBatchFrame(mediaTimeSec,pw,ph,step){
+  pctx.drawImage(video,0,0,pw,ph);
+  const img=pctx.getImageData(0,0,pw,ph);
+  const d=img.data;                                   // average brightness (detects black/blank frames)
+  let sum=0,cnt=0;for(let i=0;i<d.length;i+=128){sum+=d[i]+d[i+1]+d[i+2];cnt+=3;}
+  dbgBright=sum/Math.max(1,cnt);dbgFrames++;
+  let res;try{res=landmarker.detectForVideo(video,nextTs(mediaTimeSec*1000));}catch(e){return false;}
+  if(!res.faceLandmarks||!res.faceLandmarks.length)return false;
+  dbgFaces++;
+  const lm=res.faceLandmarks[0];
+  for(const [nm,idx] of Object.entries(ROIS)){const c=roiMeanRGB(img,pw,ph,lm,idx);
+    buffers[nm].push(c||(buffers[nm].length?buffers[nm][buffers[nm].length-1]:[128,128,128]));}
+  times.push(mediaTimeSec);noseY.push(lm[NOSE_TIP].y);
+  if(step%2===0)drawROIs(lm,video.videoWidth,video.videoHeight,false);
+  return true;
+}
+
+async function analyzeFile(file){
+  try{
+    // 1) Reset UI + all state up front so previous results can never linger
+    stopCamera();
+    $("results").classList.remove("show");$("summary").classList.remove("show");
+    $("dropzone").style.display="none";$("stageEmpty").style.display="none";
+    $("progress").classList.add("show");
+    $("progBar").style.width="0%";$("progPct").textContent="0%";$("progText").textContent="Loading…";
+    octx.clearRect(0,0,overlay.width,overlay.height);
+    resetData();cancelBatch=false;dbgFrames=0;dbgFaces=0;dbgBright=0;lastWaveform=null;
+
+    await loadModel();
+
+    // 2) (Re)load the video element race-proof — attach listeners BEFORE setting src
+    mode="video";$("modeBadge").textContent="video";video.classList.remove("mirror");
+    try{video.pause();}catch(e){}
+    video.srcObject=null;video.loop=false;video.muted=true;video.playbackRate=1;
+    if(video._url)URL.revokeObjectURL(video._url);
+    const url=URL.createObjectURL(file);video._url=url;
+    await new Promise((res,rej)=>{
+      const ok=()=>{cleanup();res();};
+      const bad=()=>{cleanup();rej(new Error("Could not read that video file (try MP4 / H.264)."));};
+      const cleanup=()=>{video.removeEventListener("loadedmetadata",ok);video.removeEventListener("error",bad);};
+      video.addEventListener("loadedmetadata",ok);
+      video.addEventListener("error",bad);
+      video.src=url;video.load();
+      if(video.readyState>=1)ok();                 // metadata already available (warm element)
+    });
+    let dur=video.duration;if(!isFinite(dur)||dur<=0)dur=0;          // some files report Infinity until played
+    const {pw,ph}=sizeCanvases();
+    $("progText").textContent="Starting…";
+
+    // Play the clip once; analyze each frame the browser actually presents (frames are guaranteed decoded).
+    try{ await video.play(); }
+    catch(e){ throw new Error("Couldn't play the video (browser blocked autoplay). Try another file."); }
+
+    await new Promise(resolve=>{
+      let step=0, finished=false;
+      const finish=()=>{ if(finished)return; finished=true; resolve(); };
+      video.onended=finish;
+
+      const useRVFC = typeof video.requestVideoFrameCallback==="function";
+      const tick=(mediaTimeSec)=>{
+        if(cancelBatch||video.ended){ finish(); return; }
+        sampleBatchFrame(mediaTimeSec,pw,ph,step); step++;
+        const d=isFinite(video.duration)&&video.duration>0?video.duration:dur;
+        const pct=d?Math.min(99,Math.round(100*video.currentTime/d)):Math.min(99,times.length);
+        $("progPct").textContent=pct+"%";$("progBar").style.width=pct+"%";
+        $("progText").textContent=`Analyzing · ${dbgFrames} frames read · ${dbgFaces} faces · brightness ${dbgBright.toFixed(0)}/255`;
+      };
+
+      if(useRVFC){
+        const cb=(now,meta)=>{ tick(meta.mediaTime); if(!finished) video.requestVideoFrameCallback(cb); };
+        video.requestVideoFrameCallback(cb);
+      }else{
+        // Fallback: poll on animation frames, de-duplicate by currentTime
+        let lastCT=-1;
+        const loop=()=>{ if(finished)return;
+          if(video.currentTime!==lastCT){ lastCT=video.currentTime; tick(video.currentTime); }
+          if(video.ended) finish(); else requestAnimationFrame(loop); };
+        requestAnimationFrame(loop);
+      }
+      // safety: finish if 'ended' never fires or playback stalls (no progress ~1.6s)
+      let wCT=-1,wStall=0;
+      const watchdog=setInterval(()=>{ if(finished){clearInterval(watchdog);return;}
+        if(video.ended){finish();clearInterval(watchdog);return;}
+        if(video.currentTime===wCT){ if(++wStall>=4){finish();clearInterval(watchdog);} }
+        else { wCT=video.currentTime; wStall=0; } },400);
+    });
+    try{ video.pause(); }catch(e){}
+
+    $("progBar").style.width="100%";$("progPct").textContent="100%";$("progText").textContent="Computing vitals…";
+    await new Promise(r=>setTimeout(r,60));
+
+    // estimate true fps from the timestamps we actually captured
+    let fps=SAMPLE_FPS;
+    if(times.length>5){const dts=[];for(let i=1;i<times.length;i++){const d=times[i]-times[i-1];if(d>0&&d<1)dts.push(d);}
+      if(dts.length){dts.sort((a,b)=>a-b);fps=1/dts[dts.length>>1];}}
+    fps=Math.min(60,Math.max(10,fps));
+
+    const captured = times.length>1 ? times[times.length-1]-times[0] : 0;
+    if(times.length<Math.round(fps*4) || captured<4){
+      let msg;
+      if(dbgFrames===0){
+        msg="The video never advanced — the browser didn't present any frames. Try re-saving/transcoding the clip to MP4 (H.264), or use a different browser (Chrome works best).";
+      }else if(dbgBright<8){
+        msg=`Read ${dbgFrames} frames but they're essentially black (brightness ${dbgBright.toFixed(0)}/255) — a decode/draw problem, not your video. Try Chrome, or re-encode the file to MP4 (H.264).`;
+      }else if(dbgFaces===0){
+        msg=`Read ${dbgFrames} frames at normal brightness (${dbgBright.toFixed(0)}/255) but the face model locked on 0 of them. Since it works in your Python script, this is likely a frame-orientation issue (portrait/rotated video) in the browser. Tell me and I'll add an auto-rotate pass.`;
+      }else{
+        msg=`Only ${dbgFaces} face frames over ${captured.toFixed(1)}s (of ${dbgFrames} read). Need ~12 s+ of visible face. Brightness ${dbgBright.toFixed(0)}/255.`;
+      }
+      $("progText").innerHTML="<span class='err'>"+msg+"</span>";
+      $("dropzone").style.display="";return;}
+
+    const out=analyseBatch(fps);
+    if(!out){$("progText").innerHTML="<span class='err'>Could not extract a pulse signal from this video.</span>";$("dropzone").style.display="";return;}
+    showResults(out);
+    $("progress").classList.remove("show");
+    $("infoChip").textContent=file.name.length>22?file.name.slice(0,20)+"…":file.name;
+  }catch(e){
+    $("progress").classList.add("show");
+    $("progText").innerHTML="<span class='err'>"+(e.message||"Error")+"</span>";
+    $("dropzone").style.display="";
+  }
+}
+
+/* ─── sliding-window feature extraction over the whole recording ─── */
+function analyseBatch(fps){
+  const N=times.length;let WIN=Math.round(WIN_SEC*fps);
+  if(N<WIN)WIN=N;                              // short clip -> single window
+  const STEP_F=Math.max(1,Math.round(STEP_SEC*fps));
+  const series={t:[],hr:[],rr:[],sdnn:[],rmssd:[],lfhf:[]};
+  const csv=[];let lastWin=null;
+
+  for(let start=0;start+WIN<=N;start+=STEP_F){
+    const end=start+WIN,tMid=times[start+(WIN>>1)];
+    const slice=arr=>arr.slice(start,end);
+    const sigs=[],wts=[];
+    for(const nm of Object.keys(ROIS)){const buf=slice(buffers[nm]);
+      const filt=bandpass(pos(buf),fps,PULSE_LO_HZ,PULSE_HI_HZ);sigs.push(filt);wts.push(snrWeight(filt,fps));}
+    const totW=wts.reduce((s,x)=>s+x,0)+1e-12,fused=new Float64Array(sigs[0].length);
+    for(let s=0;s<sigs.length;s++){const ww=wts[s]/totW;for(let i=0;i<fused.length;i++)fused[i]+=sigs[s][i]*ww;}
+
+    const hr=dominantBpm(fused,fps,BPM_LOW,BPM_HIGH);
+    const minDist=Math.max(1,Math.round(fps*60/BPM_HIGH));
+    const peaks=findPeaks(fused,minDist,PEAK_PROM*std([...fused]));
+    let sdnn=NaN,rmssd=NaN,pnn50=NaN,lfhf=NaN;
+    if(peaks.length>=4){const rri=[];for(let i=1;i<peaks.length;i++)rri.push((times[start+peaks[i]]-times[start+peaks[i-1]])*1000);
+      const td=hrvTime(rri);sdnn=td.sdnn;rmssd=td.rmssd;pnn50=td.pnn50;lfhf=hrvFreq(rri).lfhf;}
+    const ny=slice(noseY);
+    const rr=ny.length>13?dominantBpm(bandpass(ny,fps,RESP_LOW/60,RESP_HIGH/60),fps,RESP_LOW,RESP_HIGH):NaN;
+
+    series.t.push(tMid);series.hr.push(hr);series.rr.push(rr);
+    series.sdnn.push(sdnn);series.rmssd.push(rmssd);series.lfhf.push(lfhf);
+    csv.push({time_s:+tMid.toFixed(2),HR_bpm:r1(hr),RR_brpm:r1(rr),SDNN_ms:r1(sdnn),RMSSD_ms:r1(rmssd),pNN50_pct:r1(pnn50),LF_HF:r2(lfhf)});
+    lastWin={sig:fused,peaks};
+    if(WIN===N)break;
+  }
+  if(!series.hr.length)return null;
+  rows=csv;lastWaveform=lastWin;
+
+  const avg=a=>{const v=a.filter(x=>x!=null&&!isNaN(x));return v.length?mean(v):NaN;};
+  const hrV=series.hr.filter(x=>!isNaN(x));
+  return {
+    series,
+    summary:{
+      hr:avg(series.hr), hrMin:hrV.length?Math.min(...hrV):NaN, hrMax:hrV.length?Math.max(...hrV):NaN,
+      rr:avg(series.rr), sdnn:avg(series.sdnn), rmssd:avg(series.rmssd),
+      pnn50:avg(csv.map(r=>r.pNN50_pct)), lfhf:avg(series.lfhf),
+    },
+    quality: lastWin?snrWeight(lastWin.sig,fps):0,
+  };
+}
+const r1=v=>(v==null||isNaN(v))?"":+v.toFixed(1);
+const r2=v=>(v==null||isNaN(v))?"":+v.toFixed(2);
+
+/* ─── show results ─── */
+const fmt=(v,d=0)=>(v==null||isNaN(v))?"—":v.toFixed(d);
+function showResults(out){
+  const s=out.summary;
+  $("sHr").textContent=fmt(s.hr);$("sHrRange").textContent=(isNaN(s.hrMin)?"—":fmt(s.hrMin)+"–"+fmt(s.hrMax)+" bpm");
+  $("sRr").textContent=fmt(s.rr);
+  $("sSdnn").textContent=fmt(s.sdnn);$("sRmssd").textContent=fmt(s.rmssd);$("sPnn").textContent=fmt(s.pnn50);
+
+  $("mHr").textContent=fmt(s.hr);$("mRr").textContent=fmt(s.rr);
+  $("mSdnn").textContent=fmt(s.sdnn);$("mRmssd").textContent=fmt(s.rmssd);$("mLfhf").textContent=fmt(s.lfhf,2);
+  const [lbl,col]=stressLabel(s.lfhf);const pill=$("stressPill");pill.textContent=lbl;pill.style.color=col;
+  pill.style.background=col==="var(--muted)"?"rgba(126,141,166,.18)":"color-mix(in srgb,"+col+" 20%, transparent)";
+
+  const q=out.quality,ql=q>0.45?["good","var(--hrv)"]:q>0.2?["fair","var(--stress)"]:["weak","var(--hr)"];
+  $("qualityBadge").textContent="signal "+ql[0];$("qualityBadge").style.color=ql[1];
+
+  const sr=out.series;
+  spark("sparkHr",sr.hr,"#ff4d6d");spark("sparkRr",sr.rr,"#38d9d2");
+  spark("sparkSdnn",sr.sdnn,"#4ade80");spark("sparkRmssd",sr.rmssd,"#4ade80");spark("sparkLfhf",sr.lfhf,"#fbbf24");
+  drawWaveform();
+
+  $("summary").classList.add("show");$("results").classList.add("show");
+  $("btnStop").style.display="none";
+}
+
+/* ─── LIVE CAMERA (optional) ─── */
+async function startCamera(){
+  try{await loadModel();
+    stream=await navigator.mediaDevices.getUserMedia({video:{width:{ideal:640},height:{ideal:480},facingMode:"user"},audio:false});
+    mode="camera";$("modeBadge").textContent="camera";video.classList.add("mirror");
+    video.loop=false;video.src="";video.srcObject=stream;await video.play();
+    $("dropzone").style.display="none";$("progress").classList.remove("show");
+    $("summary").classList.remove("show");$("results").classList.add("show");
+    $("stageEmpty").style.display="none";$("btnStop").style.display="";
+    $("stillness").style.display="flex";$("stillness").classList.remove("move");
+    $("stillTxt").textContent="Hold still — keep your face steady";$("stillMeter").style.width="0%";
+    prevNose=null;motionEMA=0;
+    resetData();liveHist={hr:[],rr:[],sdnn:[],rmssd:[],lfhf:[]};liveLastAnalysis=-999;liveRunning=true;lastTs=0;
+    liveLoop();
+  }catch(e){$("progress").classList.add("show");$("progText").innerHTML="<span class='err'>Camera unavailable ("+(e.name||"error")+"). Upload a video instead.</span>";}
+}
+function stopCamera(){liveRunning=false;$("stillness").style.display="none";if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}}
+function liveFrame(now){if(!liveRunning)return;if(video.readyState<2){liveLoop();return;}
+  const {vw,vh,pw,ph}=sizeCanvases();if(!vw){liveLoop();return;}
+  let ts=nextTs(now||performance.now());
+  let res;try{res=landmarker.detectForVideo(video,ts);}catch(e){liveLoop();return;}
+  if(res.faceLandmarks&&res.faceLandmarks.length){const lm=res.faceLandmarks[0];
+    pctx.drawImage(video,0,0,pw,ph);const img=pctx.getImageData(0,0,pw,ph);
+    for(const [nm,idx] of Object.entries(ROIS)){const c=roiMeanRGB(img,pw,ph,lm,idx);
+      buffers[nm].push(c||(buffers[nm].length?buffers[nm][buffers[nm].length-1]:[128,128,128]));}
+    const tSec=ts/1000;times.push(tSec);noseY.push(lm[NOSE_TIP].y);drawROIs(lm,vw,vh,true);
+    const nx=lm[NOSE_TIP].x,nyp=lm[NOSE_TIP].y;            // head-motion estimate
+    if(prevNose){const d=Math.hypot(nx-prevNose[0],nyp-prevNose[1]);motionEMA=motionEMA*0.8+d*0.2;updateStillness(motionEMA);}
+    prevNose=[nx,nyp];
+    const fps=estFps();const maxLen=Math.round(45*fps);
+    if(times.length>maxLen){const d=times.length-maxLen;times.splice(0,d);noseY.splice(0,d);for(const k in buffers)buffers[k].splice(0,d);}
+    if(tSec-liveLastAnalysis>=STEP_SEC){liveLastAnalysis=tSec;liveAnalyse(fps);}}
+  liveLoop();}
+function liveLoop(){if(!liveRunning)return;
+  if(video.requestVideoFrameCallback)video.requestVideoFrameCallback(liveFrame);
+  else requestAnimationFrame(()=>liveFrame(performance.now()));}
+let fpsBuf=[];
+function estFps(){if(times.length>1){const dt=times[times.length-1]-times[times.length-2];if(dt>0&&dt<1){fpsBuf.push(1/dt);if(fpsBuf.length>30)fpsBuf.shift();}}return fpsBuf.length?mean(fpsBuf):30;}
+function liveAnalyse(fps){const WIN=Math.round(WIN_SEC*fps);if(times.length<WIN){
+    $("infoChip").textContent="Collecting "+Math.round(100*times.length/WIN)+"%";return;}
+  $("infoChip").textContent="Live";
+  const slice=a=>a.slice(a.length-WIN),tWin=slice(times);
+  const sigs=[],wts=[];for(const nm of Object.keys(ROIS)){const buf=slice(buffers[nm]);
+    const f=bandpass(pos(buf),fps,PULSE_LO_HZ,PULSE_HI_HZ);sigs.push(f);wts.push(snrWeight(f,fps));}
+  const totW=wts.reduce((s,x)=>s+x,0)+1e-12,fused=new Float64Array(sigs[0].length);
+  for(let s=0;s<sigs.length;s++){const ww=wts[s]/totW;for(let i=0;i<fused.length;i++)fused[i]+=sigs[s][i]*ww;}
+  const hr=dominantBpm(fused,fps,BPM_LOW,BPM_HIGH);
+  const minDist=Math.max(1,Math.round(fps*60/BPM_HIGH)),peaks=findPeaks(fused,minDist,PEAK_PROM*std([...fused]));
+  let sdnn=NaN,rmssd=NaN,lfhf=NaN;
+  if(peaks.length>=4){const rri=[];for(let i=1;i<peaks.length;i++)rri.push((tWin[peaks[i]]-tWin[peaks[i-1]])*1000);
+    const td=hrvTime(rri);sdnn=td.sdnn;rmssd=td.rmssd;lfhf=hrvFreq(rri).lfhf;}
+  const ny=slice(noseY),rr=ny.length>13?dominantBpm(bandpass(ny,fps,RESP_LOW/60,RESP_HIGH/60),fps,RESP_LOW,RESP_HIGH):NaN;
+  lastWaveform={sig:fused,peaks};
+  const push=(a,v)=>{a.push(v);if(a.length>120)a.shift();};
+  push(liveHist.hr,hr);push(liveHist.rr,rr);push(liveHist.sdnn,sdnn);push(liveHist.rmssd,rmssd);push(liveHist.lfhf,lfhf);
+  $("sHr").textContent=fmt(hr);$("sRr").textContent=fmt(rr);$("sSdnn").textContent=fmt(sdnn);
+  $("sRmssd").textContent=fmt(rmssd);$("sPnn").textContent="—";$("sHrRange").textContent="live";
+  $("mHr").textContent=fmt(hr);$("mRr").textContent=fmt(rr);$("mSdnn").textContent=fmt(sdnn);
+  $("mRmssd").textContent=fmt(rmssd);$("mLfhf").textContent=fmt(lfhf,2);
+  const [lbl,col]=stressLabel(lfhf);const pill=$("stressPill");pill.textContent=lbl;pill.style.color=col;
+  pill.style.background=col==="var(--muted)"?"rgba(126,141,166,.18)":"color-mix(in srgb,"+col+" 20%, transparent)";
+  spark("sparkHr",liveHist.hr,"#ff4d6d");spark("sparkRr",liveHist.rr,"#38d9d2");
+  spark("sparkSdnn",liveHist.sdnn,"#4ade80");spark("sparkRmssd",liveHist.rmssd,"#4ade80");spark("sparkLfhf",liveHist.lfhf,"#fbbf24");
+  drawWaveform();$("summary").classList.add("show");}
+
+/* ─── charts ─── */
+function fitCanvas(cv){const r=cv.getBoundingClientRect(),dpr=window.devicePixelRatio||1;
+  if(cv.width!==Math.round(r.width*dpr)){cv.width=Math.round(r.width*dpr);cv.height=Math.round(r.height*dpr);}
+  const ctx=cv.getContext("2d");ctx.setTransform(dpr,0,0,dpr,0,0);return{ctx,w:r.width,h:r.height};}
+function spark(id,raw,color){const cv=$(id),{ctx,w,h}=fitCanvas(cv);ctx.clearRect(0,0,w,h);
+  const data=raw.filter(v=>v!=null&&!isNaN(v));if(data.length<2)return;
+  const mn=Math.min(...data),mx=Math.max(...data),rng=(mx-mn)||1;
+  const pts=data.map((v,i)=>[i/(data.length-1)*w,h-4-(v-mn)/rng*(h-8)]);
+  const g=ctx.createLinearGradient(0,0,0,h);g.addColorStop(0,color+"55");g.addColorStop(1,color+"00");
+  ctx.beginPath();ctx.moveTo(pts[0][0],h);pts.forEach(p=>ctx.lineTo(p[0],p[1]));ctx.lineTo(pts[pts.length-1][0],h);ctx.closePath();ctx.fillStyle=g;ctx.fill();
+  ctx.beginPath();pts.forEach((p,i)=>i?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1]));ctx.lineWidth=1.8;ctx.strokeStyle=color;ctx.lineJoin="round";ctx.stroke();
+  const l=pts[pts.length-1];ctx.beginPath();ctx.arc(l[0],l[1],2.6,0,7);ctx.fillStyle=color;ctx.fill();}
+function drawWaveform(){const cv=$("waveCanvas"),{ctx,w,h}=fitCanvas(cv);ctx.clearRect(0,0,w,h);
+  ctx.strokeStyle="rgba(120,150,200,.08)";ctx.lineWidth=1;
+  for(let x=0;x<=w;x+=40){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,h);ctx.stroke();}
+  for(let y=0;y<=h;y+=30){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(w,y);ctx.stroke();}
+  if(!lastWaveform||!lastWaveform.sig.length){$("waveMeta").textContent="";return;}
+  const sig=lastWaveform.sig,mn=Math.min(...sig),mx=Math.max(...sig),rng=(mx-mn)||1;
+  const xy=i=>[i/(sig.length-1)*w,h-12-(sig[i]-mn)/rng*(h-24)];
+  ctx.lineWidth=3.5;ctx.strokeStyle="rgba(255,77,109,.18)";ctx.beginPath();for(let i=0;i<sig.length;i++){const[x,y]=xy(i);i?ctx.lineTo(x,y):ctx.moveTo(x,y);}ctx.stroke();
+  ctx.lineWidth=1.8;ctx.strokeStyle="#ff4d6d";ctx.lineJoin="round";ctx.beginPath();for(let i=0;i<sig.length;i++){const[x,y]=xy(i);i?ctx.lineTo(x,y):ctx.moveTo(x,y);}ctx.stroke();
+  ctx.fillStyle="#38d9d2";for(const p of lastWaveform.peaks){const[x,y]=xy(p);ctx.beginPath();ctx.arc(x,y,3,0,7);ctx.fill();}
+  $("waveMeta").textContent=`${WIN_SEC}s window · ${lastWaveform.peaks.length} beats detected`;}
+
+/* ─── CSV download ─── */
+function downloadCsv(){if(!rows.length)return;
+  const keys=Object.keys(rows[0]),lines=[keys.join(",")].concat(rows.map(r=>keys.map(k=>r[k]).join(",")));
+  const blob=new Blob([lines.join("\n")],{type:"text/csv"}),url=URL.createObjectURL(blob);
+  const a=document.createElement("a");a.href=url;a.download="physio_results.csv";a.click();URL.revokeObjectURL(url);}
+
+/* ─── reset ─── */
+function reset(){stopCamera();cancelBatch=true;try{video.pause();}catch(e){}
+  video.src="";video.srcObject=null;resetData();octx.clearRect(0,0,overlay.width,overlay.height);
+  $("results").classList.remove("show");$("summary").classList.remove("show");
+  $("progress").classList.remove("show");$("progBar").style.width="0%";$("progPct").textContent="0%";
+  $("stageEmpty").style.display="";$("dropzone").style.display="";$("infoChip").textContent="Ready";$("stillness").style.display="none";}
+
+/* ─── wiring ─── */
+const dz=$("dropzone"),fileInput=$("fileInput");
+$("btnFile").onclick=e=>{e.stopPropagation();fileInput.click();};
+$("btnCam").onclick=e=>{e.stopPropagation();startCamera();};
+dz.onclick=()=>fileInput.click();
+fileInput.onchange=e=>{const f=e.target.files[0];e.target.value="";if(f)analyzeFile(f);};
+dz.addEventListener("dragover",e=>{e.preventDefault();dz.classList.add("drag");});
+dz.addEventListener("dragleave",()=>dz.classList.remove("drag"));
+dz.addEventListener("drop",e=>{e.preventDefault();dz.classList.remove("drag");
+  const f=e.dataTransfer.files[0];if(f&&f.type.startsWith("video"))analyzeFile(f);});
+$("btnAnother").onclick=reset;
+$("btnStop").onclick=()=>{stopCamera();$("btnStop").style.display="none";$("stillness").style.display="none";$("infoChip").textContent="Stopped";};
+$("btnCsv").onclick=downloadCsv;
+window.addEventListener("resize",()=>{if(lastWaveform)drawWaveform();});
+</script>
